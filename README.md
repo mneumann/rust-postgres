@@ -1,7 +1,12 @@
-rust-postgres
-=============
+# rust-postgres [![Build Status][travis-image]][travis-link]
 
-A PostgreSQL client library written in pure Rust
+[travis-image]: https://travis-ci.org/mneumann/rust-postgres.png?branch=master
+[travis-link]: https://travis-ci.org/mneumann/rust-postgres
+
+A [PostgreSQL][postgres-home] client library written in pure [Rust][rust-home].
+
+[rust-home]: http://www.rust-lang.org
+[postgres-home]: http://www.postgresql.org
 
 ## License
 
