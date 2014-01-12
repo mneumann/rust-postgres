@@ -1,3 +1,5 @@
+#[feature(struct_variant)];
+
 use std::io::buffered::BufferedStream;
 use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::TcpStream;
@@ -14,6 +16,38 @@ enum AuthType {
     AuthCryptPassword(u16),
     AuthMD5Password(u32),
     AuthSCMCredential 
+}
+
+struct FieldInfo {
+    name: ~str,
+    oid: i32,
+    attr_nr: i16,
+    type_oid: i32,
+    typlen: i16,
+    atttypmod: i32,
+    formatcode: i16
+}
+
+enum Message {
+    MsgAuthentification(AuthType), // 'R'
+    MsgPassword {password: ~str}, // 'p'
+    MsgParameterStatus {key: ~str, val: ~str}, // 'S'
+    MsgBackendKeyData {process_id: i32, secret_key: i32}, // 'K'
+    MsgReadyForQuery {backend_transaction_status_indicator: u8}, // 'Z'
+    MsgDataRow {columns: ~[Option<~[u8]>]}, // 'D'
+    MsgCommandComplete {cmd_tag: ~str}, // 'C' 
+    MsgEmptyQueryResponse, // 'I'
+    MsgNoticeResponse {field_type: u8, field_values: ~[~str]}, // 'N' 
+    MsgErrorResponse {field_type: u8, field_values: ~[~str]}, // 'E' 
+    MsgCopyInResponse, // 'G'
+    MsgCopyOutResponse, // 'H'
+    MsgParse {query: ~str, stmt_name: ~str, parameter_oids: ~[i32]}, // 'P'
+    MsgParseComplete, // '1'
+    MsgQuery {query: ~str}, // 'Q'
+    MsgRowDescription {fields: ~[FieldInfo]}, // 'T'
+    MsgTerminate, // 'X'
+    MsgStartupMessage {proto_version: i32, params: ~[(~str, ~str)]},
+    MsgSSLRequest {ssl_request_code: i32}
 }
 
 fn write_cstring(io: &mut BufferedStream<TcpStream>, str: &str) {
