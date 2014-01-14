@@ -1,8 +1,122 @@
 #[feature(struct_variant)];
 
+extern mod extra;
+
 use std::io::buffered::BufferedStream;
 use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::TcpStream;
+use extra::serialize;
+
+/// A structure to decode a Postgres message from a reader.
+pub struct Decoder<'a> {
+    priv rd: &'a mut BufferedStream<TcpStream>,
+    priv remaining_bytes: uint
+}
+
+impl<'a> Decoder<'a> {
+    /// Creates a new Postgres decoder for decoding from the
+    /// specified reader.
+    pub fn new(rd: &'a mut BufferedStream<TcpStream>, remaining_bytes: uint) -> Decoder<'a> {
+      Decoder { rd: rd, remaining_bytes: remaining_bytes }
+    }
+
+    fn read_cstr(&mut self) -> ~str {
+        let mut b = self.rd.read_until(0).unwrap();
+        b.pop();
+        std::str::from_utf8_owned(b)
+    }
+
+    fn get_remaining_bytes(&self) -> uint { self.remaining_bytes }
+}
+
+impl<'a> serialize::Decoder for Decoder<'a> {
+    fn read_nil(&mut self) -> () { fail!() }
+
+    fn read_u64(&mut self) -> u64 { fail!() }
+
+    fn read_uint(&mut self) -> uint { fail!() }
+
+    fn read_u32(&mut self) -> u32 { fail!() }
+
+    fn read_u16(&mut self) -> u16 { fail!() }
+
+    fn read_u8(&mut self) -> u8 { self.rd.read_u8() }
+
+    fn read_i64(&mut self) -> i64 { fail!() }
+
+    fn read_int(&mut self) -> int { fail!() }
+
+    fn read_i32(&mut self) -> i32 { self.rd.read_be_i32() } 
+
+    fn read_i16(&mut self) -> i16 { self.rd.read_be_i16() }
+
+    fn read_i8(&mut self) -> i8 { fail!() }
+
+    fn read_bool(&mut self) -> bool { fail!() }
+
+    fn read_f64(&mut self) -> f64 { fail!() }
+
+    fn read_f32(&mut self) -> f32 { fail!() }
+
+    fn read_char(&mut self) -> char { fail!() }
+
+    fn read_str(&mut self) -> ~str { self.read_cstr() }
+
+    fn read_enum<T>(&mut self, _name: &str, _f: |&mut Decoder<'a>| -> T) -> T { fail!() }
+    fn read_enum_variant<T>(&mut self, _names: &[&str], _f: |&mut Decoder<'a>, uint| -> T) -> T { fail!() }
+    fn read_enum_variant_arg<T>(&mut self, _idx: uint, _f: |&mut Decoder<'a>| -> T) -> T { fail!() }
+
+    fn read_seq<T>(&mut self, f: |&mut Decoder<'a>, uint| -> T) -> T {
+        let len = self.read_i16();
+        assert!(len >= 0);
+        f(self, len as uint)
+    }
+    
+    fn read_seq_elt<T>(&mut self, _idx: uint, f: |&mut Decoder<'a>| -> T) -> T {
+        f(self)
+    }
+
+    fn read_struct<T>(&mut self, _name: &str, _len: uint, f: |&mut Decoder<'a>| -> T) -> T {
+        f(self)
+    }
+
+    fn read_struct_field<T>(&mut self, _name: &str, _idx: uint, f: |&mut Decoder<'a>| -> T) -> T {
+        f(self)
+    }
+
+    fn read_option<T>(&mut self, _f: |&mut Decoder<'a>, bool| -> T) -> T { fail!() }
+
+    fn read_map<T>(&mut self, _f: |&mut Decoder<'a>, uint| -> T) -> T { fail!() }
+    fn read_map_elt_key<T>(&mut self, _idx: uint, f: |&mut Decoder<'a>| -> T) -> T { f(self) }
+    fn read_map_elt_val<T>(&mut self, _idx: uint, f: |&mut Decoder<'a>| -> T) -> T { f(self) }
+
+
+    fn read_enum_struct_variant<T>(&mut self, names: &[&str],
+                                   f: |&mut Decoder<'a>, uint| -> T)
+                                   -> T { self.read_enum_variant(names, f) } 
+
+    fn read_enum_struct_variant_field<T>(&mut self, _name: &str, idx: uint,
+                                         f: |&mut Decoder<'a>| -> T)
+                                         -> T { self.read_enum_variant_arg(idx, f) }
+
+    fn read_tuple<T>(&mut self, f: |&mut Decoder<'a>, uint| -> T) -> T {
+        self.read_seq(f)
+    }
+
+    fn read_tuple_arg<T>(&mut self, idx: uint, f: |&mut Decoder<'a>| -> T) -> T {
+        self.read_seq_elt(idx, f)
+    }
+
+    fn read_tuple_struct<T>(&mut self, _name: &str,
+                            f: |&mut Decoder<'a>, uint| -> T)
+                            -> T { self.read_tuple(f) }
+
+    fn read_tuple_struct_arg<T>(&mut self, idx: uint,
+                                f: |&mut Decoder<'a>| -> T)
+                                -> T { self.read_tuple_arg(idx, f) }
+}
+
+
 
 static PROTO_VERSION: i32 = 196608; // 3 << 16
 
@@ -18,7 +132,7 @@ enum AuthType {
     AuthSCMCredential 
 }
 
-#[deriving(ToStr)]
+#[deriving(ToStr,Decodable)]
 struct FieldInfo {
     name: ~str,
     oid: i32,
@@ -29,24 +143,77 @@ struct FieldInfo {
     formatcode: i16
 }
 
+// 'E'
+#[deriving(ToStr)]
+struct MResponseStatus {
+    field_type: u8,
+    field_values: ~[~str]
+}
+
+// 'K'
+#[deriving(ToStr,Decodable)]
+struct MBackendKeyData {
+    process_id: i32,
+    secret_key: i32
+}
+
+// 'S'
+#[deriving(ToStr,Decodable)]
+struct MParameterStatus {
+    key: ~str,
+    val: ~str
+}
+
+// 'T'
+#[deriving(ToStr,Decodable)]
+struct MRowDescription {
+    fields: ~[FieldInfo]
+}
+
+// 'D'
+#[deriving(ToStr)]
+struct MDataRow {
+    columns: ~[Option<~[u8]>]
+}
+
+impl<'a> serialize::Decodable<Decoder<'a>> for MDataRow {
+    fn decode(d: &mut Decoder<'a>) -> MDataRow {
+        let ncols = d.rd.read_be_i16();
+        assert!(ncols >= 0);
+        let mut arr = ~[];
+
+        for _ in range(0, ncols) {
+            let len = d.rd.read_be_i32();
+            if len == -1 {
+                (&mut arr).push(None);
+            } else {
+                assert!(len >= 0);
+                (&mut arr).push(Some(d.rd.read_bytes(len as uint))); 
+            }
+        }
+        MDataRow {columns: arr}
+    }
+}
+
+
 #[deriving(ToStr)]
 enum Message {
     MsgAuthentification(AuthType), // 'R'
     MsgPassword {password: ~str}, // 'p'
-    MsgParameterStatus {key: ~str, val: ~str}, // 'S'
-    MsgBackendKeyData {process_id: i32, secret_key: i32}, // 'K'
+    MsgParameterStatus(MParameterStatus), // 'S'
+    MsgBackendKeyData(MBackendKeyData),
     MsgReadyForQuery {backend_transaction_status_indicator: u8}, // 'Z'
-    MsgDataRow {columns: ~[Option<~[u8]>]}, // 'D'
+    MsgDataRow(MDataRow), // 'D'
     MsgCommandComplete {cmd_tag: ~str}, // 'C' 
     MsgEmptyQueryResponse, // 'I'
-    MsgNoticeResponse {field_type: u8, field_values: ~[~str]}, // 'N' 
-    MsgErrorResponse {field_type: u8, field_values: ~[~str]}, // 'E' 
+    MsgNoticeResponse(MResponseStatus), // 'N' 
+    MsgErrorResponse(MResponseStatus), // 'E'
     MsgCopyInResponse, // 'G'
     MsgCopyOutResponse, // 'H'
     MsgParse {query: ~str, stmt_name: ~str, parameter_oids: ~[i32]}, // 'P'
     MsgParseComplete, // '1'
     MsgQuery {query: ~str}, // 'Q'
-    MsgRowDescription {fields: ~[FieldInfo]}, // 'T'
+    MsgRowDescription(MRowDescription), // 'T'
     MsgTerminate, // 'X'
     MsgStartup {proto_version: i32, params: ~[(~str, ~str)]},
     MsgSSLRequest {ssl_request_code: i32}
@@ -120,6 +287,23 @@ fn read_cstring(io: &mut BufferedStream<TcpStream>) -> ~str {
     std::str::from_utf8_owned(b)
 }
 
+impl<'a> serialize::Decodable<Decoder<'a>> for MResponseStatus {
+    fn decode(d: &mut Decoder<'a>) -> MResponseStatus {
+        let mut sz = d.get_remaining_bytes() - 1;
+        let field_type = d.rd.read_u8();
+        let mut arr = ~[];
+        while sz > 1 {
+            let s = d.read_cstr();
+            sz -= (s.len() + 1);
+            (&mut arr).push(s);
+        }
+        let nul = d.rd.read_u8();
+        assert!(nul == 0);
+        assert!(sz - 1 == 0);
+        MResponseStatus {field_type: field_type, field_values: arr}
+    }
+}
+
 fn read_message(io: &mut BufferedStream<TcpStream>) -> Message {
     let ty = io.read_u8();
     let sz = io.read_be_i32();
@@ -128,40 +312,34 @@ fn read_message(io: &mut BufferedStream<TcpStream>) -> Message {
         'R' => MsgAuthentification(parse_auth_message(io, sz-4)),
         'p' => MsgPassword {password: read_cstring(io)},
         'S' => {
-            let key = read_cstring(io);
-            let val = read_cstring(io); 
-            MsgParameterStatus {key: key, val: val}
+            let mut d = Decoder::new(io, sz as uint - 4);
+            MsgParameterStatus(serialize::Decodable::decode(&mut d))
         },
         'K' => {
-             let process_id = io.read_be_i32(); 
-             let secret_key = io.read_be_i32(); 
-             MsgBackendKeyData {process_id: process_id, secret_key: secret_key}
+            let mut d = Decoder::new(io, sz as uint - 4);
+            MsgBackendKeyData(serialize::Decodable::decode(&mut d))
         }
         'Z' => MsgReadyForQuery {backend_transaction_status_indicator: io.read_u8()},
-        'D' => fail!(), // MsgDataRow {columns: ~[Option<~[u8]>]},
+        'D' => {
+            let mut d = Decoder::new(io, sz as uint - 4);
+            MsgDataRow(serialize::Decodable::decode(&mut d))
+        } 
         'C' => MsgCommandComplete {cmd_tag: read_cstring(io)},
         'I' => MsgEmptyQueryResponse,
         'N' => fail!(), // MsgNoticeResponse {field_type: u8, field_values: ~[~str]},
         'E' => {
-            let mut sz = sz - 5;
-            let field_type = io.read_u8();
-            let mut arr = ~[];
-            while sz > 1 {
-                let s = read_cstring(io);
-                sz -= (s.len() + 1) as i32;
-                (&mut arr).push(s);
-            }
-            let nul = io.read_u8();
-            assert!(nul == 0);
-
-            MsgErrorResponse {field_type: field_type, field_values: arr}
+            let mut d = Decoder::new(io, sz as uint - 4);
+            MsgErrorResponse(serialize::Decodable::decode(&mut d))
         }
         'G' => MsgCopyInResponse,
         'H' => MsgCopyOutResponse,
         'P' => fail!(), // MsgParse {query: ~str, stmt_name: ~str, parameter_oids: ~[i32]},
         '1' => MsgParseComplete,
         'Q' => MsgQuery {query: read_cstring(io)},
-        'T' => fail!(), // MsgRowDescription {fields: ~[FieldInfo]},
+        'T' => {
+            let mut d = Decoder::new(io, sz as uint - 4);
+            MsgRowDescription(serialize::Decodable::decode(&mut d))
+        }
         'X' => MsgTerminate,
         _ => fail!()
     }
@@ -192,8 +370,10 @@ fn main() {
     }
 
     write_message(&mut io, &MsgQuery {query: ~"select * from articles;"});
-    write_message(&mut io, &MsgQuery {query: ~"select * from articles;"});
+    //write_message(&mut io, &MsgQuery {query: ~"select * from articles;"});
 
-    let msg = read_message(&mut io);
-    println!("{:?}", msg);
+    loop {
+      let msg = read_message(&mut io);
+      println!("{:?}", msg);
+    }
 }
