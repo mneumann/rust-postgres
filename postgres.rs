@@ -6,6 +6,7 @@ use std::io::buffered::BufferedStream;
 use std::io::net::ip::SocketAddr;
 use std::io::net::tcp::TcpStream;
 use extra::serialize;
+use extra::serialize::Decodable;
 
 /// A structure to decode a Postgres message from a reader.
 pub struct Decoder<'a> {
@@ -20,6 +21,7 @@ impl<'a> Decoder<'a> {
       Decoder { rd: rd, remaining_bytes: remaining_bytes }
     }
 
+    // XXX: read max number of bytes
     fn read_cstr(&mut self) -> ~str {
         let mut b = self.rd.read_until(0).unwrap();
         b.pop();
@@ -257,34 +259,27 @@ fn write_message_header(io: &mut BufferedStream<TcpStream>, typ: u8, payload: ui
     io.write_be_i32((payload + 4) as i32);
 }
 
-fn parse_auth_message(io: &mut BufferedStream<TcpStream>, rem_len: i32) -> AuthType {
-    assert!(rem_len >= 4);
-    let authtype = io.read_be_i32();
+fn parse_auth_message<'a>(d: &mut Decoder<'a>) -> AuthType {
+    assert!(d.remaining_bytes >= 4);
+    let authtype = d.rd.read_be_i32();
     match authtype {
         0 => AuthOk, 
         1 => AuthKerberosV4,
         2 => AuthKerberosV5,
         3 => AuthClearTextPassword,
         4 => {
-            assert!(rem_len >= 4 + 2);
-            let salt = io.read_be_u16();
+            assert!(d.remaining_bytes >= 4 + 2);
+            let salt = d.rd.read_be_u16();
             AuthCryptPassword(salt)
         }
         5 => {
-            assert!(rem_len >= 4 + 4);
-            let salt = io.read_be_u32();
+            assert!(d.remaining_bytes >= 4 + 4);
+            let salt = d.rd.read_be_u32();
             AuthMD5Password(salt)
         }
         6 => AuthSCMCredential,
         _ => AuthUnknown
     }
-}
-
-// XXX: read max number of bytes
-fn read_cstring(io: &mut BufferedStream<TcpStream>) -> ~str {
-    let mut b = io.read_until(0).unwrap();
-    b.pop();
-    std::str::from_utf8_owned(b)
 }
 
 impl<'a> serialize::Decodable<Decoder<'a>> for MResponseStatus {
@@ -308,38 +303,26 @@ fn read_message(io: &mut BufferedStream<TcpStream>) -> Message {
     let ty = io.read_u8();
     let sz = io.read_be_i32();
     assert!(sz >= 4);
+
+    let mut d = Decoder::new(io, sz as uint - 4);
+
     match (ty as char) {
-        'R' => MsgAuthentification(parse_auth_message(io, sz-4)),
-        'p' => MsgPassword {password: read_cstring(io)},
-        'S' => {
-            let mut d = Decoder::new(io, sz as uint - 4);
-            MsgParameterStatus(serialize::Decodable::decode(&mut d))
-        },
-        'K' => {
-            let mut d = Decoder::new(io, sz as uint - 4);
-            MsgBackendKeyData(serialize::Decodable::decode(&mut d))
-        }
-        'Z' => MsgReadyForQuery {backend_transaction_status_indicator: io.read_u8()},
-        'D' => {
-            let mut d = Decoder::new(io, sz as uint - 4);
-            MsgDataRow(serialize::Decodable::decode(&mut d))
-        } 
-        'C' => MsgCommandComplete {cmd_tag: read_cstring(io)},
+        'R' => MsgAuthentification(parse_auth_message(&mut d)),
+        'p' => MsgPassword {password: d.read_cstr()},
+        'S' => MsgParameterStatus(Decodable::decode(&mut d)),
+        'K' => MsgBackendKeyData(Decodable::decode(&mut d)),
+        'Z' => MsgReadyForQuery {backend_transaction_status_indicator: d.rd.read_u8()},
+        'D' => MsgDataRow(Decodable::decode(&mut d)),
+        'C' => MsgCommandComplete {cmd_tag: d.read_cstr()},
         'I' => MsgEmptyQueryResponse,
-        'N' => fail!(), // MsgNoticeResponse {field_type: u8, field_values: ~[~str]},
-        'E' => {
-            let mut d = Decoder::new(io, sz as uint - 4);
-            MsgErrorResponse(serialize::Decodable::decode(&mut d))
-        }
+        'N' => MsgNoticeResponse(Decodable::decode(&mut d)),
+        'E' => MsgErrorResponse(Decodable::decode(&mut d)),
         'G' => MsgCopyInResponse,
         'H' => MsgCopyOutResponse,
         'P' => fail!(), // MsgParse {query: ~str, stmt_name: ~str, parameter_oids: ~[i32]},
         '1' => MsgParseComplete,
-        'Q' => MsgQuery {query: read_cstring(io)},
-        'T' => {
-            let mut d = Decoder::new(io, sz as uint - 4);
-            MsgRowDescription(serialize::Decodable::decode(&mut d))
-        }
+        'Q' => MsgQuery {query: d.read_cstr()},
+        'T' => MsgRowDescription(Decodable::decode(&mut d)),
         'X' => MsgTerminate,
         _ => fail!()
     }
